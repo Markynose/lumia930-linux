@@ -1,0 +1,47 @@
+maintainer="Markynose <https://github.com/Markynose>"
+pkgname=device-nokia-martini
+pkgdesc="Nokia Lumia 930"
+pkgver=1
+pkgrel=0
+url="https://postmarketos.org"
+license="MIT"
+arch="armv7"
+options="!check !archcheck"
+depends="
+	linux-postmarketos-qcom-msm8974
+	lk2nd-msm8974
+	mkbootimg
+	postmarketos-base
+"
+makedepends="devicepkg-dev"
+source="
+	deviceinfo
+	kernel-cmdline.conf
+	modules-initfs
+	lumia-usb-gadget.sh
+	usb-gadget-rebind.service
+	usb0.nmconnection
+	lumia930-modules.conf
+"
+build() {
+	devicepkg_build $startdir $pkgname
+}
+package() {
+	devicepkg_package $startdir $pkgname
+
+	install -Dm755 "$srcdir"/lumia-usb-gadget.sh \
+		"$pkgdir"/usr/sbin/lumia-usb-gadget.sh
+	install -Dm644 "$srcdir"/usb-gadget-rebind.service \
+		"$pkgdir"/usr/lib/systemd/system/usb-gadget-rebind.service
+	install -Dm600 "$srcdir"/usb0.nmconnection \
+		"$pkgdir"/etc/NetworkManager/system-connections/usb0.nmconnection
+	install -Dm644 "$srcdir"/lumia930-modules.conf \
+		"$pkgdir"/etc/modules-load.d/lumia930.conf
+
+	mkdir -p "$pkgdir"/etc/systemd/system/multi-user.target.wants
+	ln -s /usr/lib/systemd/system/usb-gadget-rebind.service \
+		"$pkgdir"/etc/systemd/system/multi-user.target.wants/usb-gadget-rebind.service
+	mkdir -p "$pkgdir"/etc/systemd/system/getty.target.wants
+	ln -s /usr/lib/systemd/system/serial-getty@.service \
+		"$pkgdir"/etc/systemd/system/getty.target.wants/serial-getty@ttyGS0.service
+}

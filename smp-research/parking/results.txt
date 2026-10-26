@@ -1,0 +1,27 @@
+curated hardware output; not a firmware dump
+
+cpu1, two cache-invalidated observations:
+(bootloader) trampoline marker=0x930c0001 entry marker=0x80000001
+(bootloader) trampoline marker=0x930c0001 entry marker=0x80000001
+
+cpu2, two cache-invalidated observations:
+(bootloader) trampoline marker=0x930c0002 entry marker=0x80000002
+(bootloader) trampoline marker=0x930c0002 entry marker=0x80000002
+
+cpu3, two cache-invalidated observations:
+(bootloader) trampoline marker=0x930c0003 entry marker=0x80000003
+(bootloader) trampoline marker=0x930c0003 entry marker=0x80000003
+
+before each test:
+mailbox: ffffffff ffffffff 00000000 00000000
+all 29 original parking-code words matched the device-owned firmware
+unused scratch was zero; written stub was read back in full
+marker globals were zero before publication
+
+one targeted SGI1 per core; no SCM calls or ACC/SAW/core resets
+all mailboxes explicitly disarmed afterward and read back:
+ffffffff ffffffff 00000000 00000000
+
+shared startup acknowledgement after testing: 4
+fastboot remained responsive
+no persistent phone storage writes, firmware changes or Linux SMP boot

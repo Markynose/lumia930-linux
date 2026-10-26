@@ -1,0 +1,40 @@
+From: lumia930-linux
+Subject: [PATCH] target: msm8974: remove framebuffer relocation hack
+
+applies against Mainline4Lumia/lk2nd, branch martini-support
+(https://github.com/Mainline4Lumia/lk2nd/tree/martini-support)
+
+the branch's target_init() points the mdp scanout register at
+0x0ff00000, which is uninitialized ram, so the display shows
+noise for the rest of the lk session (no text is drawn there).
+combined with 0001's raised kernel load address, the two would
+also collide: the forced kernel address 0x10008000 sits inside
+the 1080x1920x4 framebuffer that would start at 0x0ff00000.
+
+removing the relocation leaves scanout on the live uefi
+framebuffer at 0x00400000 (the address bootshim's own display
+output already uses), so bootshim's text stays visible and
+nothing overlaps the raised kernel address range.
+---
+--- a/target/msm8974/init.c
++++ b/target/msm8974/init.c
+@@ -366,19 +366,10 @@
+ #endif
+
+
+-#define FB_ADDR_REG             0xFD901E14
+-#define FB_NEW_ADDR             0x0FF00000
+-
+ void target_init(void)
+ {
+ 	dprintf(INFO, "target_init()\n");
+
+-	dprintf(INFO, "relocating framebuffer to 0x%d", FB_NEW_ADDR);
+-	writel(FB_NEW_ADDR, FB_ADDR_REG);
+-	writel(0x1, 0xfd900618);
+-	writel(0x1, 0xfd900718);
+-
+-
+ 	spmi_init(PMIC_ARB_CHANNEL_NUM, PMIC_ARB_OWNER_ID);
+
+ 	/* Save PM8941 version info. */

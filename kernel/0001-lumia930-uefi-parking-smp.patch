@@ -1,0 +1,195 @@
+From: lumia930-linux
+Subject: [PATCH] arm: qcom: boot lumia 930 secondaries through stock UEFI parking
+
+board-specific non-secure mailbox release; no SCM or core reset.
+validated with cpu0–cpu3 online, pinned workers, timers, IPIs and USB.
+applies to msm8974-mainline/linux f243f840064d20797ff18fa59b857dd33f0b3db8.
+install the companion DTS files from dts/ before building.
+
+diff --git a/arch/arm/boot/dts/qcom/Makefile b/arch/arm/boot/dts/qcom/Makefile
+index 892171a25..bf1bbe8bd 100644
+--- a/arch/arm/boot/dts/qcom/Makefile
++++ b/arch/arm/boot/dts/qcom/Makefile
+@@ -63,3 +63,4 @@ dtb-$(CONFIG_ARCH_QCOM) += \
+ 	qcom-sdx55-t55.dtb \
+ 	qcom-sdx55-telit-fn980-tlb.dtb \
+ 	qcom-sdx65-mtp.dtb
++dtb-$(CONFIG_ARCH_QCOM) += qcom-msm8974-nokia-martini.dtb
+diff --git a/arch/arm/mach-qcom/Makefile b/arch/arm/mach-qcom/Makefile
+index b839201c9..05769da01 100644
+--- a/arch/arm/mach-qcom/Makefile
++++ b/arch/arm/mach-qcom/Makefile
+@@ -1,2 +1,2 @@
+ # SPDX-License-Identifier: GPL-2.0-only
+-obj-$(CONFIG_SMP)	+= platsmp.o
++obj-$(CONFIG_SMP)	+= platsmp.o platsmp-lumia930.o headsmp-lumia930.o
+diff --git a/arch/arm/mach-qcom/platsmp-lumia930.c b/arch/arm/mach-qcom/platsmp-lumia930.c
+new file mode 100644
+--- /dev/null
++++ b/arch/arm/mach-qcom/platsmp-lumia930.c
+@@ -0,0 +1,128 @@
++// SPDX-License-Identifier: GPL-2.0-only
++#include <linux/init.h>
++#include <linux/io.h>
++#include <linux/of.h>
++#include <linux/of_address.h>
++#include <linux/smp.h>
++
++#include <asm/cacheflush.h>
++#include <asm/memory.h>
++#include <asm/smp_plat.h>
++
++#define PARK_BASE	0x00300000
++#define PARK_SIZE	0x00040000
++#define PARK_PAGE	0x1000
++#define PARK_ENTRY	8
++#define PARK_MPIDR	0x200
++#define PARK_SCTLR	0x208
++#define PARK_ACTLR	0x20c
++#define PARK_STAGE	0x210
++#define PARK_SGIR	0xf9000f00
++
++extern char lumia930_secondary_startup[], lumia930_secondary_startup_end[];
++
++static void __iomem *park;
++static void __iomem *sgir;
++
++static void __iomem *lumia930_mailbox(unsigned int cpu)
++{
++	return park + (cpu_logical_map(cpu) + 1) * PARK_PAGE;
++}
++
++static void __init lumia930_smp_prepare_cpus(unsigned int max_cpus)
++{
++	struct device_node *node;
++	struct resource res;
++	unsigned int cpu;
++	int ret;
++
++	if (!of_machine_is_compatible("nokia,martini"))
++		goto unavailable;
++
++	node = of_find_compatible_node(NULL, NULL, "nokia,lumia930-mp-park");
++	if (!node)
++		goto unavailable;
++	ret = of_address_to_resource(node, 0, &res);
++	if (!of_property_read_bool(node, "no-map"))
++		ret = -EINVAL;
++	of_node_put(node);
++	if (ret || res.start != PARK_BASE || resource_size(&res) != PARK_SIZE)
++		goto unavailable;
++
++	park = ioremap(PARK_BASE, PARK_SIZE);
++	sgir = ioremap(PARK_SGIR, sizeof(u32));
++	if (!park || !sgir)
++		goto unavailable;
++
++	__sync_cache_range_w(lumia930_secondary_startup,
++		lumia930_secondary_startup_end - lumia930_secondary_startup);
++
++	for_each_present_cpu(cpu) {
++		void __iomem *box;
++
++		if (!cpu)
++			continue;
++		if (cpu_logical_map(cpu) > 3)
++			goto bad_cpu;
++		box = lumia930_mailbox(cpu);
++		if (readl(box) != U32_MAX || readl(box + 4) != U32_MAX ||
++		    readl(box + PARK_ENTRY) || readl(box + PARK_ENTRY + 4))
++			goto bad_cpu;
++		pr_info("lumia930 parking: CPU%u mailbox %08x ready\n", cpu,
++			PARK_BASE + (cpu_logical_map(cpu) + 1) * PARK_PAGE);
++		continue;
++bad_cpu:
++		pr_err("lumia930 parking: CPU%u mailbox not idle\n", cpu);
++		set_cpu_present(cpu, false);
++	}
++	return;
++
++unavailable:
++	pr_err("lumia930 parking: reserved mailbox region unavailable\n");
++	for_each_present_cpu(cpu)
++		if (cpu)
++			set_cpu_present(cpu, false);
++}
++
++static int lumia930_boot_secondary(unsigned int cpu, struct task_struct *idle)
++{
++	void __iomem *box;
++	unsigned int hwid = cpu_logical_map(cpu);
++	u32 entry = __pa_symbol(lumia930_secondary_startup);
++
++	if (!park || !sgir || !hwid || hwid > 3)
++		return -EINVAL;
++	box = lumia930_mailbox(cpu);
++	if (readl(box) != U32_MAX || readl(box + PARK_ENTRY) ||
++	    readl(box + PARK_ENTRY + 4))
++		return -EBUSY;
++
++	writel(0, box + PARK_STAGE);
++	writel(0, box + PARK_ENTRY + 4);
++	writel(entry, box + PARK_ENTRY);
++	wmb();
++	writel(hwid, box);
++	dsb(sy);
++
++	/* SGI0 is the Linux wake-up IPI; avoid the not-yet-known GIC cpu map. */
++	writel(BIT(hwid + 16), sgir);
++	dsb(sy);
++	pr_info("lumia930 parking: CPU%u released to %08x with SGI0\n", cpu, entry);
++	return 0;
++}
++
++static void lumia930_secondary_init(unsigned int cpu)
++{
++	void __iomem *box = lumia930_mailbox(cpu);
++
++	pr_info("lumia930 parking: CPU%u entered, MPIDR=%08x SCTLR=%08x ACTLR=%08x stage=%u\n",
++		cpu, readl(box + PARK_MPIDR), readl(box + PARK_SCTLR),
++		readl(box + PARK_ACTLR), readl(box + PARK_STAGE));
++}
++
++static const struct smp_operations lumia930_smp_ops __initconst = {
++	.smp_prepare_cpus = lumia930_smp_prepare_cpus,
++	.smp_boot_secondary = lumia930_boot_secondary,
++	.smp_secondary_init = lumia930_secondary_init,
++};
++CPU_METHOD_OF_DECLARE(lumia930_parking, "nokia,lumia930-parking-v1", &lumia930_smp_ops);
+diff --git a/arch/arm/mach-qcom/headsmp-lumia930.S b/arch/arm/mach-qcom/headsmp-lumia930.S
+new file mode 100644
+--- /dev/null
++++ b/arch/arm/mach-qcom/headsmp-lumia930.S
+@@ -0,0 +1,32 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++#include <linux/linkage.h>
++#include <asm/assembler.h>
++
++	.arm
++	.text
++	.align 5
++ENTRY(lumia930_secondary_startup)
++	cpsid aif
++	mrc p15, 0, r1, c0, c0, 5
++	str r1, [r0, #0x200]
++	mrs r1, cpsr
++	str r1, [r0, #0x204]
++	mrc p15, 0, r1, c1, c0, 0
++	str r1, [r0, #0x208]
++	mrc p15, 0, r1, c1, c0, 1
++	str r1, [r0, #0x20c]
++	mvn r1, #0
++	str r1, [r0]
++	ldr r2, =0xf9002000
++	ldr r1, [r2, #0x0c]
++	ubfx r3, r1, #0, #10
++	cmp r3, #0
++	streq r1, [r2, #0x10]
++	mov r1, #1
++	str r1, [r0, #0x210]
++	dsb sy
++	b secondary_startup_arm
++	.ltorg
++ENDPROC(lumia930_secondary_startup)
++	.globl lumia930_secondary_startup_end
++lumia930_secondary_startup_end:

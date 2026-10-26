@@ -1,0 +1,2 @@
+# diff context markers are not source indentation.
+*.patch -whitespace

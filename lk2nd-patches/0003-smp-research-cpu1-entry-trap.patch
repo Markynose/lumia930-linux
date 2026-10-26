@@ -1,0 +1,59 @@
+diff --git a/arch/arm/crt0.S b/arch/arm/crt0.S
+index 64e1a75..54ee2b0 100644
+--- a/arch/arm/crt0.S
++++ b/arch/arm/crt0.S
+@@ -39,6 +39,17 @@ _start:
+ 	b	arm_fiq
+ 
+ reset:
++	/* smp bring-up probe (smp-research/): park any core other than cpu0
++	 * here immediately, before the stack/bss/relocation code below runs.
++	 * mpidr affinity0 is the per-cluster core id on this soc. if a
++	 * secondary core is landing at this address instead of the scm boot
++	 * address we configured, this catches it before it can touch state
++	 * shared with a live cpu0, and leaves a marker proving it happened. */
++	mrc	p15, 0, r4, c0, c0, 5
++	and	r4, r4, #0x3
++	cmp	r4, #0
++	bne	.Lpark_secondary
++
+ 	b	1f
+ 	/* Some magic used by 32-bit Linux */
+ 	.word	0x016f2818
+@@ -137,6 +148,18 @@ lk_boot_args:
+ lk_boot_addr:
+ 	.word	0
+ 
++.global secondary_core_marker
++.Lpark_secondary:
++	ldr	r5, =secondary_core_marker
++	ldr	r4, =0xdead9311
++	str	r4, [r5]
++	dsb			/* force the store to complete before parking,
++				 * same reasoning as smp_trampoline in
++				 * lk2nd/fastboot/smptest.c */
++.Lpark_wfe:
++	wfe
++	b	.Lpark_wfe
++
+ #if WITH_CPU_WARM_BOOT
+ warm_boot_tag:
+ 	.word 0
+@@ -208,9 +231,16 @@ warm_boot_tag:
+ 
+ .bss
+ .align 2
++secondary_core_marker:
++	.word	0
++
++	/* abort_stack_top goes straight into sp at crt0's c entry (bl kmain),
++	 * which aapcs32 requires 8-byte aligned -- secondary_core_marker above
++	 * shifted this off an 8-byte boundary, balign restores it. */
++	.balign 8
+ 	/* the abort stack is for unrecoverable errors.
+ 	 * also note the initial working stack is set to here.
+-	 * when the threading system starts up it'll switch to a new 
++	 * when the threading system starts up it'll switch to a new
+ 	 * dynamically allocated stack, so we don't need it for very long
+ 	 */
+ abort_stack:
