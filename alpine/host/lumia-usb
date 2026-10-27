@@ -1,13 +1,53 @@
 #!/bin/sh
 set -eu
 
+# Status belongs on stderr; stdout remains available for command output.
+stage() {
+	printf '  -> %s\n' "$*" >&2
+}
+
+# Only animate commands whose output was already suppressed. Keep commands
+# in the foreground (stdin and signal behaviour unchanged), and isolate traps
+# so the caller's nft rules cleanup remains in force.
+quiet_step() (
+	label=$1
+	shift
+	spinner=
+	cleanup() {
+		if [ -n "$spinner" ]; then
+			kill "$spinner" 2>/dev/null || :
+			wait "$spinner" 2>/dev/null || :
+			printf '\r  - %s\n' "$label" >&2
+		fi
+	}
+	trap cleanup 0
+	trap 'exit 1' 1 2 15
+	if [ -t 2 ] && [ "${TERM:-dumb}" != dumb ]; then
+		(
+			while :; do
+				for frame in '|' '/' '-' '\'; do
+					printf '\r  %s %s' "$frame" "$label" >&2
+					sleep 0.1
+				done
+			done
+		) &
+		spinner=$!
+	else
+		stage "$label"
+	fi
+	# Disconnect is best-effort in the original helper; do not claim success.
+	"$@" >/dev/null 2>&1
+)
+
 if [ "$(id -u)" != 0 ]; then
 	SELF=$(CDPATH= cd "$(dirname "$0")" && pwd)/$(basename "$0")
+	stage "configuring temporary USB sharing"
 	if command -v doas >/dev/null 2>&1; then
 		doas -n "$SELF" --network
 	else
 		sudo -n "$SELF" --network
 	fi
+	stage "setting the phone clock over SSH"
 	NOW=$(date -u '+%Y-%m-%d %H:%M:%S')
 	ssh -o BatchMode=yes lumia930 "date -u -s '$NOW'"
 	printf 'USB network and clock ready; connect with: ssh lumia930\n'
@@ -16,6 +56,7 @@ fi
 
 [ "${1:-}" = --network ] || { echo 'run lumia-usb as your normal user' >&2; exit 1; }
 umask 077
+stage "finding the phone USB interface"
 USB=
 for path in /sys/class/net/*/address; do
 	IFS= read -r mac < "$path" || continue
@@ -26,6 +67,7 @@ for path in /sys/class/net/*/address; do
 	fi
 done
 [ -n "$USB" ] || { echo 'phone USB network not found; plug in the phone while alpine is running' >&2; exit 1; }
+stage "finding the internet uplink"
 UPLINK=$(ip -4 route get 1.1.1.1 | awk '{for (i=1;i<=NF;i++) if ($i=="dev") {print $(i+1); exit}}')
 for iface in "$USB" "$UPLINK"; do
 	case "$iface" in ''|*[!a-zA-Z0-9_.:-]*) echo 'invalid or missing network interface' >&2; exit 1;; esac
@@ -52,18 +94,22 @@ table ip lumia930_usb {
 	}
 }
 EOF
+stage "checking temporary firewall rules"
 nft -c -f "$RULES"
 if command -v nmcli >/dev/null 2>&1; then
-	nmcli device disconnect "$USB" >/dev/null 2>&1 || :
+	quiet_step "releasing $USB from NetworkManager (best effort)" nmcli device disconnect "$USB" || :
 elif command -v dhcpcd >/dev/null 2>&1; then
-	dhcpcd -x "$USB" >/dev/null 2>&1 || :
+	quiet_step "releasing $USB from dhcpcd (best effort)" dhcpcd -x "$USB" || :
 	sleep 1
 fi
+stage "configuring $USB addressing and route"
 ip addr replace 172.16.42.2/24 dev "$USB"
 ip link set "$USB" up
 ip route replace 172.16.42.1/32 dev "$USB" src 172.16.42.2
+stage "checking IPv4 forwarding"
 if [ "$(sysctl -n net.ipv4.ip_forward)" != 1 ]; then
 	sysctl -w net.ipv4.ip_forward=1
 fi
+stage "applying temporary sharing rules"
 nft -f "$RULES"
 printf 'temporary sharing: %s -> %s; no inbound port forwarding\n' "$USB" "$UPLINK"
