@@ -1,0 +1,14 @@
+#!/sbin/openrc-run
+
+description="lumia USB network"
+
+depend() {
+	need devfs sysfs
+	provide net
+}
+
+start() {
+	ebegin "starting lumia USB network"
+	/usr/sbin/lumia-usb
+	eend $?
+}

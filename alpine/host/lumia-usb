@@ -1,0 +1,69 @@
+#!/bin/sh
+set -eu
+
+if [ "$(id -u)" != 0 ]; then
+	SELF=$(CDPATH= cd "$(dirname "$0")" && pwd)/$(basename "$0")
+	if command -v doas >/dev/null 2>&1; then
+		doas -n "$SELF" --network
+	else
+		sudo -n "$SELF" --network
+	fi
+	NOW=$(date -u '+%Y-%m-%d %H:%M:%S')
+	ssh -o BatchMode=yes lumia930 "date -u -s '$NOW'"
+	printf 'USB network and clock ready; connect with: ssh lumia930\n'
+	exit 0
+fi
+
+[ "${1:-}" = --network ] || { echo 'run lumia-usb as your normal user' >&2; exit 1; }
+umask 077
+USB=
+for path in /sys/class/net/*/address; do
+	IFS= read -r mac < "$path" || continue
+	if [ "$mac" = 02:93:00:00:00:02 ]; then
+		USB=${path%/address}
+		USB=${USB##*/}
+		break
+	fi
+done
+[ -n "$USB" ] || { echo 'phone USB network not found; plug in the phone while alpine is running' >&2; exit 1; }
+UPLINK=$(ip -4 route get 1.1.1.1 | awk '{for (i=1;i<=NF;i++) if ($i=="dev") {print $(i+1); exit}}')
+for iface in "$USB" "$UPLINK"; do
+	case "$iface" in ''|*[!a-zA-Z0-9_.:-]*) echo 'invalid or missing network interface' >&2; exit 1;; esac
+done
+[ "$USB" != "$UPLINK" ] || { echo 'no separate internet uplink' >&2; exit 1; }
+RULES=$(mktemp /tmp/lumia930-usb.XXXXXX)
+trap 'rm -f "$RULES"' 0
+trap 'exit 1' 1 2 15
+if nft list table ip lumia930_usb >/dev/null 2>&1; then
+	printf 'delete table ip lumia930_usb\n' > "$RULES"
+fi
+cat >> "$RULES" <<EOF
+table ip lumia930_usb {
+	chain forward {
+		type filter hook forward priority -5; policy accept;
+		iifname "$USB" oifname "$UPLINK" ip saddr 172.16.42.1 ct state new,established,related counter accept
+		iifname "$USB" counter drop
+		oifname "$USB" ip daddr 172.16.42.1 ct state established,related counter accept
+		oifname "$USB" counter drop
+	}
+	chain postrouting {
+		type nat hook postrouting priority srcnat; policy accept;
+		iifname "$USB" oifname "$UPLINK" ip saddr 172.16.42.1 counter masquerade
+	}
+}
+EOF
+nft -c -f "$RULES"
+if command -v nmcli >/dev/null 2>&1; then
+	nmcli device disconnect "$USB" >/dev/null 2>&1 || :
+elif command -v dhcpcd >/dev/null 2>&1; then
+	dhcpcd -x "$USB" >/dev/null 2>&1 || :
+	sleep 1
+fi
+ip addr replace 172.16.42.2/24 dev "$USB"
+ip link set "$USB" up
+ip route replace 172.16.42.1/32 dev "$USB" src 172.16.42.2
+if [ "$(sysctl -n net.ipv4.ip_forward)" != 1 ]; then
+	sysctl -w net.ipv4.ip_forward=1
+fi
+nft -f "$RULES"
+printf 'temporary sharing: %s -> %s; no inbound port forwarding\n' "$USB" "$UPLINK"

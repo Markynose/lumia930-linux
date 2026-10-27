@@ -1,0 +1,109 @@
+#!/bin/sh
+set -eu
+umask 077
+export PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C
+
+MODE=${1:-}
+BASE=/run/lumia-persist
+MNT=$BASE/data
+STORE=$MNT/linux/alpine
+DEVICE=/dev/mmcblk0p28
+HELPER=/usr/lib/lumia-persist/snapshot
+mounted=0
+stage=
+fail() { echo "lumia persistence: $*" >&2; exit 1; }
+[ "$(id -u)" = 0 ] || fail 'root required'
+case $MODE in save|restore) ;; *) fail 'usage: lumia-persist save|restore' ;; esac
+mkdir -p "$BASE" "$MNT"
+mkdir "$BASE/lock" || fail 'another persistence operation is running'
+cleanup() {
+	result=$?
+	trap - EXIT HUP INT TERM
+	if [ "$mounted" = 1 ]; then
+		sync
+		if umount "$MNT"; then
+			blockdev --setro "$DEVICE" || result=1
+		else
+			echo 'lumia persistence: unmount failed; do not power off' >&2
+			result=1
+		fi
+	fi
+	[ -z "$stage" ] || rm -rf "$stage"
+	rmdir "$BASE/lock"
+	exit "$result"
+}
+trap cleanup EXIT
+trap 'exit 1' HUP INT TERM
+case $(uname -r) in *-lumia930-data-save-*) ;; *) fail 'bounded Data kernel required' ;; esac
+for attempt in $(seq 1 50); do
+	[ ! -e /sys/class/block/mmcblk0p28/size ] || break
+	sleep 0.1
+done
+[ "$(cat /sys/class/block/mmcblk0p28/start)" = 5308416 ] || fail 'unexpected Data start'
+[ "$(cat /sys/class/block/mmcblk0p28/size)" = 55762911 ] || fail 'unexpected Data size'
+grep -qx PARTNAME=Data /sys/class/block/mmcblk0p28/uevent || fail 'unexpected partition label'
+mountpoint -q "$MNT" && fail 'private mountpoint already in use'
+if awk '$3 ~ /^179:/ { found=1 } END { exit !found }' /proc/self/mountinfo; then
+	fail 'an MMC filesystem is already mounted'
+fi
+for node in /sys/class/block/mmcblk0p*; do
+	blockdev --setro "/dev/${node##*/}"
+done
+candidates() {
+	for dir in "$STORE"/s[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]; do
+		[ ! -d "$dir" ] || [ -L "$dir" ] || printf '%s\n' "$dir"
+	done | sort -r
+}
+check_store() {
+	[ ! -L "$MNT/linux" ] && [ ! -L "$STORE" ] || fail 'store path is a symlink'
+	[ -f "$STORE/format" ] && [ ! -L "$STORE/format" ] || fail 'missing store identifier'
+	[ "$(cat "$STORE/format")" = lumia930-diskless-v1 ] || fail 'wrong store format'
+}
+if [ "$MODE" = restore ]; then
+	mount -t ntfs3 -o ro,nosuid,nodev,noexec,noatime "$DEVICE" "$MNT"
+	mounted=1
+	[ -e "$STORE" ] || { echo 'lumia persistence: no saved state, using base RAM system'; exit 0; }
+	check_store
+	for gen in $(candidates); do
+		if "$HELPER" verify "$gen"; then
+			"$HELPER" apply "$gen"
+			printf '%s\n' "${gen##*/}" > "$BASE/restored"
+			echo "lumia persistence: restored ${gen##*/} into RAM"
+			exit 0
+		fi
+	done
+	fail 'no valid saved generation; using base RAM system'
+fi
+stage=$(mktemp -d "$BASE/build.XXXXXX")
+"$HELPER" pack "$stage/snapshot"
+blockdev --setrw "$DEVICE"
+if ! mount -t ntfs3 -o rw,nosuid,nodev,noexec,noatime,uid=0,gid=0,umask=0077 "$DEVICE" "$MNT"; then
+	blockdev --setro "$DEVICE"
+	fail 'Data mount failed; no forced recovery attempted'
+fi
+mounted=1
+required=$(du -sk "$stage/snapshot" | awk '{print $1}')
+available=$(df -Pk "$MNT" | awk 'NR==2 { print $4 }')
+[ "${available:-0}" -gt "$((required + 65536))" ] || fail 'insufficient free space'
+[ ! -L "$MNT/linux" ] && [ ! -L "$STORE" ] || fail 'store path is a symlink'
+if [ ! -e "$STORE" ]; then
+	mkdir -p "$STORE"
+	printf '%s\n' lumia930-diskless-v1 > "$STORE/format"
+fi
+check_store
+latest=$(candidates | head -1)
+number=1
+if [ -n "$latest" ]; then
+	number=$(printf '%s\n' "${latest##*/s}" | sed 's/^0*//')
+	number=$((number + 1))
+fi
+[ "$number" -le 99999999 ] || fail 'generation counter exhausted'
+name=$(printf 's%08d' "$number")
+[ ! -e "$STORE/$name" ] || fail 'generation already exists'
+pending=$(mktemp -d "$STORE/.pending.XXXXXX")
+cp -a "$stage/snapshot/." "$pending/"
+"$HELPER" verify "$pending"
+sync
+mv "$pending" "$STORE/$name"
+sync
+echo "lumia persistence: committed $name; previous generations retained"

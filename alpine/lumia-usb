@@ -1,0 +1,40 @@
+#!/bin/sh
+set -eu
+
+mountpoint -q /sys/kernel/config || mount -t configfs configfs /sys/kernel/config
+G=/sys/kernel/config/usb_gadget/alpine930
+mkdir -p "$G"
+printf '0x1d6b\n' > "$G/idVendor"
+printf '0x0104\n' > "$G/idProduct"
+mkdir -p "$G/strings/0x409"
+printf '930\n' > "$G/strings/0x409/serialnumber"
+printf 'lumia\n' > "$G/strings/0x409/manufacturer"
+printf 'lumia 930 alpine\n' > "$G/strings/0x409/product"
+mkdir -p "$G/configs/c.1/strings/0x409" "$G/functions/ncm.usb0"
+printf 'ncm\n' > "$G/configs/c.1/strings/0x409/configuration"
+printf '02:93:00:00:00:01\n' > "$G/functions/ncm.usb0/dev_addr"
+printf '02:93:00:00:00:02\n' > "$G/functions/ncm.usb0/host_addr"
+[ -L "$G/configs/c.1/ncm.usb0" ] || ln -s "$G/functions/ncm.usb0" "$G/configs/c.1/ncm.usb0"
+
+n=0
+while [ "$n" -lt 100 ]; do
+	for udc in /sys/class/udc/*; do
+		[ -e "$udc" ] || continue
+		printf '%s\n' "${udc##*/}" > "$G/UDC"
+		break 2
+	done
+	n=$((n + 1))
+	sleep 0.1
+done
+[ "$n" -lt 100 ] || { echo 'no USB device controller found' >&2; exit 1; }
+
+n=0
+while ! ip link show usb0 >/dev/null 2>&1; do
+	n=$((n + 1))
+	[ "$n" -lt 100 ] || { echo 'USB network interface missing' >&2; exit 1; }
+	sleep 0.1
+done
+ip link set lo up
+ip addr replace 172.16.42.1/24 dev usb0
+ip link set usb0 up
+ip route replace default via 172.16.42.2 dev usb0

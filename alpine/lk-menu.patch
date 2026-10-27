@@ -1,0 +1,57 @@
+diff --git a/lk2nd/boot/rules.mk b/lk2nd/boot/rules.mk
+index 14d2676..6a41909 100644
+--- a/lk2nd/boot/rules.mk
++++ b/lk2nd/boot/rules.mk
+@@ -11,6 +11,14 @@ OBJS += \
+ 	$(LOCAL_DIR)/extlinux.o \
+ 	$(LOCAL_DIR)/util.o \
+ 
++ifeq ($(LUMIA930_ALPINE),1)
++DEFINES += LUMIA930_ALPINE=1
++OBJS += \
++	$(LOCAL_DIR)/lumia930/fat-ro.o \
++	$(LOCAL_DIR)/lumia930/image-valid.o \
++	$(LOCAL_DIR)/lumia930/lumia930-file.o
++endif
++
+ # Default boot memory size limit (50 MiB)
+ LK2ND_BOOT_MEM_SIZE ?= 0x03200000
+ 
+diff --git a/lk2nd/device/menu/menu.c b/lk2nd/device/menu/menu.c
+index 28ab377..108bc25 100644
+--- a/lk2nd/device/menu/menu.c
++++ b/lk2nd/device/menu/menu.c
+@@ -17,6 +17,9 @@
+ #include <lk2nd/version.h>
+ 
+ #include "../device.h"
++#if LUMIA930_ALPINE
++#include "../../boot/lumia930/lumia930-file.h"
++#endif
+ 
+ // Defined in app/aboot/aboot.c
+ extern void cmd_continue(const char *arg, void *data, unsigned sz);
+@@ -133,6 +136,13 @@ static void opt_recovery(void)
+ static void opt_bootloader(void) { reboot_device(FASTBOOT_MODE); }
+ static void opt_edl(void)        { reboot_device(EMERGENCY_DLOAD); }
+ static void opt_shutdown(void)   { shutdown_device(); }
++#if LUMIA930_ALPINE
++static void opt_alpine(void)
++{
++	lumia930_alpine_boot();
++	thread_sleep(2000);
++}
++#endif
+ 
+ static struct {
+ 	char *name;
+@@ -141,6 +151,9 @@ static struct {
+ } menu_options[] = {
+ 	{ "  Reboot  ", GREEN,  opt_reboot },
+ 	{ " Continue ", WHITE,  opt_continue },
++#if LUMIA930_ALPINE
++	{ "  alpine  ", GREEN,  opt_alpine },
++#endif
+ 	{ " Recovery ", ORANGE, opt_recovery },
+ 	{ "Bootloader", ORANGE, opt_bootloader },
+ 	{ "    EDL   ", RED,    opt_edl },

@@ -1,0 +1,24 @@
+#!/bin/sh
+set -eu
+export PATH=/usr/sbin:/usr/bin:/sbin:/bin
+
+mountpoint -q /dev || mount -t devtmpfs -o mode=0755 devtmpfs /dev
+mkdir -p /proc /sys /run
+mountpoint -q /proc || mount -t proc proc /proc
+mountpoint -q /sys || mount -t sysfs sysfs /sys
+mountpoint -q /run || mount -t tmpfs -o mode=0755,nosuid,nodev tmpfs /run
+exec </dev/console >/dev/console 2>&1
+printf '\nalpine on the lumia 930\nUSB SSH: root@172.16.42.1, key authentication only\n\n'
+if [ -x /usr/lib/lumia-persist/lumia-persist ]; then
+	printf 'diskless RAM root: run lumia-save to commit changes\n'
+	mkdir -p /run/lumia-persist
+	if /usr/lib/lumia-persist/lumia-persist restore > /run/lumia-persist/restore.log 2>&1; then
+		tail -5 /run/lumia-persist/restore.log
+	else
+		tail -10 /run/lumia-persist/restore.log
+		printf 'saved-state restoration failed; recovery RAM image remains available\n'
+	fi
+else
+	printf 'RAM root: changes do not survive reboot\n'
+fi
+exec /sbin/init

@@ -1,0 +1,89 @@
+#!/bin/sh
+set -eu
+umask 077
+export PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C
+
+fail() { echo "lumia persistence: $*" >&2; exit 1; }
+verify() {
+	gen=$1
+	[ -d "$gen/packages" ] && [ ! -L "$gen/packages" ] || return 1
+	total=0
+	for file in "$gen/config.tar.gz" "$gen/installed.txt" "$gen/world" "$gen/SHA256SUMS" "$gen"/packages/*.apk; do
+		[ -f "$file" ] && [ ! -L "$file" ] || return 1
+		size=$(stat -c %s "$file")
+		[ "$size" -le 134217728 ] || return 1
+		total=$((total + size))
+		[ "$total" -le 134217728 ] || return 1
+	done
+	for file in "$gen"/packages/*.apk; do
+		case ${file##*/} in *[!a-zA-Z0-9._+-]*) return 1 ;; esac
+	done
+	(cd "$gen"; sha256sum config.tar.gz installed.txt world packages/*.apk) > "$tmp/checksums"
+	cmp -s "$tmp/checksums" "$gen/SHA256SUMS" || return 1
+	gzip -dc "$gen/config.tar.gz" | head -c 16777217 > "$tmp/config.tar"
+	[ "$(stat -c %s "$tmp/config.tar")" -le 16777216 ] || return 1
+	gzip -t "$gen/config.tar.gz" || return 1
+	tar -tf "$tmp/config.tar" > "$tmp/entries" || return 1
+	[ -s "$tmp/entries" ] || return 1
+	awk '
+	 /(^|\/)\.\.(\/|$)/ { exit 1 }
+	 /^(etc|root)(\/|$)/ { next }
+	 /^usr\/local(\/|$)/ { next }
+	 { exit 1 }
+	' "$tmp/entries" || return 1
+}
+
+mkdir -p /run/lumia-persist
+tmp=$(mktemp -d /run/lumia-persist/check.XXXXXX)
+trap 'rm -rf "$tmp"' EXIT HUP INT TERM
+case ${1:-} in
+pack)
+	gen=${2:?destination required}
+	[ ! -e "$gen" ] || fail 'destination already exists'
+	mkdir -p "$gen/packages" /usr/local
+	awk -F: '/^P:/ { name=$2 } /^V:/ { print name "=" $2 }' /lib/apk/db/installed > "$gen/installed.txt"
+	[ -s "$gen/installed.txt" ] || fail 'empty installed package list'
+	cp /etc/apk/world "$gen/world"
+	before=$(sha256sum /lib/apk/db/installed /etc/apk/world)
+	missing=
+	while IFS= read -r dependency; do
+		file=${dependency%%=*}-${dependency#*=}.apk
+		if [ -f "/var/cache/lumia-apk/$file" ]; then
+			cp "/var/cache/lumia-apk/$file" "$gen/packages/$file"
+		else
+			missing="$missing $dependency"
+		fi
+	done < "$gen/installed.txt"
+	if [ -n "$missing" ]; then
+		apk update
+		set -f
+		apk fetch --recursive --output "$gen/packages" $(cat "$gen/installed.txt")
+		set +f
+	fi
+	apk verify "$gen"/packages/*.apk
+	tar -cf "$tmp/build.tar" --exclude=root/.cache -C / etc root usr/local
+	[ "$before" = "$(sha256sum /lib/apk/db/installed /etc/apk/world)" ] || fail 'package state changed during save'
+	[ "$(stat -c %s "$tmp/build.tar")" -le 16777216 ] || fail 'configuration archive exceeds 16 MiB'
+	gzip -n -c "$tmp/build.tar" > "$gen/config.tar.gz"
+	(cd "$gen"; sha256sum config.tar.gz installed.txt world packages/*.apk) > "$gen/SHA256SUMS"
+	verify "$gen" || fail 'new snapshot verification failed'
+	;;
+verify)
+	verify "${2:?snapshot required}" || fail 'snapshot verification failed'
+	;;
+apply)
+	gen=${2:?snapshot required}
+	verify "$gen" || fail 'snapshot verification failed'
+	apk verify "$gen"/packages/*.apk
+	# the signed package cache is persisted outside apk repository discovery.
+	apk add --no-network --force-non-repository --repositories-file /dev/null "$gen"/packages/*.apk
+	mkdir -p /var/cache/lumia-apk
+	cp "$gen"/packages/*.apk /var/cache/lumia-apk/
+	for path in /etc /root /usr /usr/local; do
+		[ ! -L "$path" ] || fail 'restore target is a symlink'
+	done
+	tar -xf "$tmp/config.tar" -C /
+	cp "$gen/world" /etc/apk/world
+	;;
+*) fail 'usage: snapshot pack|verify|apply directory' ;;
+esac

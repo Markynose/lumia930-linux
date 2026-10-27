@@ -1,0 +1,12 @@
+#!/sbin/openrc-run
+
+description="key-only SSH over the lumia USB link"
+command=/usr/sbin/dropbear
+command_args="-F -E -s -j -k -p 172.16.42.1:22 -r /etc/dropbear/dropbear_ed25519_host_key"
+command_background=yes
+pidfile=/run/lumia-ssh.pid
+
+depend() {
+	need lumia-usb
+	provide sshd
+}

@@ -1,0 +1,354 @@
+diff --git a/drivers/mmc/core/block.c b/drivers/mmc/core/block.c
+index 9cc47bf94..ceadaaafa 100644
+--- a/drivers/mmc/core/block.c
++++ b/drivers/mmc/core/block.c
+@@ -845,37 +845,7 @@ static int mmc_blk_check_blkdev(struct block_device *bdev)
+ static int mmc_blk_ioctl(struct block_device *bdev, blk_mode_t mode,
+ 	unsigned int cmd, unsigned long arg)
+ {
+-	struct mmc_blk_data *md;
+-	int ret;
+-
+-	switch (cmd) {
+-	case MMC_IOC_CMD:
+-		ret = mmc_blk_check_blkdev(bdev);
+-		if (ret)
+-			return ret;
+-		md = mmc_blk_get(bdev->bd_disk);
+-		if (!md)
+-			return -EINVAL;
+-		ret = mmc_blk_ioctl_cmd(md,
+-					(struct mmc_ioc_cmd __user *)arg,
+-					NULL);
+-		mmc_blk_put(md);
+-		return ret;
+-	case MMC_IOC_MULTI_CMD:
+-		ret = mmc_blk_check_blkdev(bdev);
+-		if (ret)
+-			return ret;
+-		md = mmc_blk_get(bdev->bd_disk);
+-		if (!md)
+-			return -EINVAL;
+-		ret = mmc_blk_ioctl_multi_cmd(md,
+-					(struct mmc_ioc_multi_cmd __user *)arg,
+-					NULL);
+-		mmc_blk_put(md);
+-		return ret;
+-	default:
+-		return -EINVAL;
+-	}
++	return -EROFS;
+ }
+ 
+ #ifdef CONFIG_COMPAT
+@@ -2455,6 +2425,12 @@ enum mmc_issued mmc_blk_mq_issue_rq(struct mmc_queue *mq, struct request *req)
+ 	struct mmc_host *host = card->host;
+ 	int ret;
+ 
++	if (req_op(req) != REQ_OP_READ && req_op(req) != REQ_OP_WRITE &&
++	    !(req_op(req) == REQ_OP_DRV_IN &&
++	      (req_to_mmc_queue_req(req)->drv_op == MMC_DRV_OP_GET_CARD_STATUS ||
++	       req_to_mmc_queue_req(req)->drv_op == MMC_DRV_OP_GET_EXT_CSD)))
++		return MMC_REQ_FAILED_TO_START;
++
+ 	ret = mmc_blk_part_switch(card, md->part_type);
+ 	if (ret)
+ 		return MMC_REQ_FAILED_TO_START;
+@@ -2626,14 +2602,8 @@ static struct mmc_blk_data *mmc_blk_alloc_req(struct mmc_card *card,
+ 			md->flags |= MMC_BLK_CMD23;
+ 	}
+ 
+-	if (md->flags & MMC_BLK_CMD23 &&
+-	    ((card->ext_csd.rel_param & EXT_CSD_WR_REL_PARAM_EN) ||
+-	     card->ext_csd.rel_sectors)) {
+-		md->flags |= MMC_BLK_REL_WR;
+-		features |= (BLK_FEAT_WRITE_CACHE | BLK_FEAT_FUA);
+-	} else if (mmc_cache_enabled(card->host)) {
+-		features |= BLK_FEAT_WRITE_CACHE;
+-	}
++	/* the bounded build verifies hardware cache-off before exposing the disk. */
++	features = 0;
+ 
+ 	md->disk = mmc_init_queue(&md->queue, card, features);
+ 	if (IS_ERR(md->disk)) {
+@@ -3057,6 +3027,9 @@ static int mmc_blk_alloc_parts(struct mmc_card *card, struct mmc_blk_data *md)
+ {
+ 	int idx, ret;
+ 
++	/* no hardware partitions or RPMB in this build. */
++	return 0;
++
+ 	if (!mmc_card_mmc(card))
+ 		return 0;
+ 
+diff --git a/drivers/mmc/core/core.c b/drivers/mmc/core/core.c
+index a0e2dce70..3c1736806 100644
+--- a/drivers/mmc/core/core.c
++++ b/drivers/mmc/core/core.c
+@@ -45,6 +45,8 @@
+ #include "mmc_ops.h"
+ #include "sd_ops.h"
+ #include "sdio_ops.h"
++#include "lumia930-audit.h"
++#include "lumia930-data-range.h"
+ 
+ /* The max erase timeout, used when host->max_busy_timeout isn't specified */
+ #define MMC_ERASE_TIMEOUT_MS	(60 * 1000) /* 60 s */
+@@ -216,6 +218,29 @@ static void __mmc_start_request(struct mmc_host *host, struct mmc_request *mrq)
+ {
+ 	int err;
+ 
++	bool data_write = mrq->data && (mrq->data->flags & MMC_DATA_WRITE);
++	bool bounded_write = data_write && mrq->data->flags == MMC_DATA_WRITE &&
++		host->card &&
++		mmc_card_mmc(host->card) &&
++		lumia930_mmc_data_write_allowed(mrq->cmd->opcode, mrq->cmd->arg,
++			mrq->data->blksz, mrq->data->blocks,
++			mmc_card_blockaddr(host->card),
++			!host->card->ext_csd.cache_ctrl,
++			!(host->card->ext_csd.part_config & EXT_CSD_PART_CONFIG_ACC_MASK));
++
++	if ((!bounded_write && !lumia930_mmc_audit_allowed(mrq->cmd->opcode,
++			mrq->cmd->arg, data_write)) ||
++	    (mrq->sbc && !lumia930_mmc_audit_allowed(mrq->sbc->opcode,
++			mrq->sbc->arg, false)) ||
++	    (mrq->stop && !lumia930_mmc_audit_allowed(mrq->stop->opcode,
++			mrq->stop->arg, false))) {
++		pr_warn_ratelimited("mmc audit: blocked CMD%u index %u\n",
++			mrq->cmd->opcode, (mrq->cmd->arg >> 16) & 255);
++		mrq->cmd->error = mrq->cmd->opcode == MMC_SWITCH ? -EBADMSG : -EROFS;
++		mmc_request_done(host, mrq);
++		return;
++	}
++
+ 	/* Assumes host controller has been runtime resumed by mmc_claim_host */
+ 	err = mmc_retune(host);
+ 	if (err) {
+@@ -435,47 +460,9 @@ EXPORT_SYMBOL(mmc_wait_for_req_done);
+  */
+ int mmc_cqe_start_req(struct mmc_host *host, struct mmc_request *mrq)
+ {
+-	int err;
+-
+-	/*
+-	 * CQE cannot process re-tuning commands. Caller must hold retuning
+-	 * while CQE is in use.  Re-tuning can happen here only when CQE has no
+-	 * active requests i.e. this is the first.  Note, re-tuning will call
+-	 * ->cqe_off().
+-	 */
+-	err = mmc_retune(host);
+-	if (err)
+-		goto out_err;
+-
+-	mrq->host = host;
+-
+-	mmc_mrq_pr_debug(host, mrq, true);
+-
+-	err = mmc_mrq_prep(host, mrq);
+-	if (err)
+-		goto out_err;
+-
+-	if (host->uhs2_sd_tran)
+-		mmc_uhs2_prepare_cmd(host, mrq);
+-
+-	err = host->cqe_ops->cqe_request(host, mrq);
+-	if (err)
+-		goto out_err;
+-
+-	trace_mmc_request_start(host, mrq);
+-
+-	return 0;
+-
+-out_err:
+-	if (mrq->cmd) {
+-		pr_debug("%s: failed to start CQE direct CMD%u, error %d\n",
+-			 mmc_hostname(host), mrq->cmd->opcode, err);
+-	} else {
+-		pr_debug("%s: failed to start CQE transfer for tag %d, error %d\n",
+-			 mmc_hostname(host), mrq->tag, err);
+-	}
+-	return err;
++	return -EROFS;
+ }
++
+ EXPORT_SYMBOL(mmc_cqe_start_req);
+ 
+ /**
+diff --git a/drivers/mmc/core/mmc.c b/drivers/mmc/core/mmc.c
+index 5be9b42d5..a5698ff41 100644
+--- a/drivers/mmc/core/mmc.c
++++ b/drivers/mmc/core/mmc.c
+@@ -1868,32 +1868,32 @@ static int mmc_init_card(struct mmc_host *host, u32 ocr,
+ 		}
+ 	}
+ 
+-	/*
+-	 * If cache size is higher than 0, this indicates the existence of cache
+-	 * and it can be turned on. Note that some eMMCs from Micron has been
+-	 * reported to need ~800 ms timeout, while enabling the cache after
+-	 * sudden power failure tests. Let's extend the timeout to a minimum of
+-	 * DEFAULT_CACHE_EN_TIMEOUT_MS and do it for all cards.
+-	 */
+-	if (card->ext_csd.cache_size > 0) {
+-		unsigned int timeout_ms = MIN_CACHE_EN_TIMEOUT_MS;
++	/* refuse write access unless hardware state matches the bounded policy. */
++	{
++		u8 *verified;
+ 
+-		timeout_ms = max(card->ext_csd.generic_cmd6_time, timeout_ms);
+-		err = mmc_switch(card, EXT_CSD_CMD_SET_NORMAL,
+-				EXT_CSD_CACHE_CTRL, 1, timeout_ms);
+-		if (err && err != -EBADMSG)
+-			goto free_card;
++		if (card->ext_csd.cache_size > 0) {
++			unsigned int timeout_ms = max(card->ext_csd.generic_cmd6_time,
++						     MIN_CACHE_EN_TIMEOUT_MS);
+ 
+-		/*
+-		 * Only if no error, cache is turned on successfully.
+-		 */
+-		if (err) {
+-			pr_warn("%s: Cache is supported, but failed to turn on (%d)\n",
+-				mmc_hostname(card->host), err);
+-			card->ext_csd.cache_ctrl = 0;
+-		} else {
+-			card->ext_csd.cache_ctrl = 1;
++			err = mmc_switch(card, EXT_CSD_CMD_SET_NORMAL,
++					EXT_CSD_CACHE_CTRL, 0, timeout_ms);
++			if (err)
++				goto free_card;
+ 		}
++		err = mmc_get_ext_csd(card, &verified);
++		if (err)
++			goto free_card;
++		if (verified[EXT_CSD_CACHE_CTRL] ||
++		    (verified[EXT_CSD_PART_CONFIG] & EXT_CSD_PART_CONFIG_ACC_MASK) ||
++		    verified[EXT_CSD_DATA_SECTOR_SIZE])
++			err = -EROFS;
++		kfree(verified);
++		if (err)
++			goto free_card;
++		card->ext_csd.cache_ctrl = 0;
++		pr_info("%s: bounded Data writes, verified cache-off/user-area/512-byte sectors\n",
++			mmc_hostname(card->host));
+ 	}
+ 
+ 	/*
+diff --git a/drivers/mmc/host/sdhci-msm.c b/drivers/mmc/host/sdhci-msm.c
+index bc6ca4965..f699e8682 100644
+--- a/drivers/mmc/host/sdhci-msm.c
++++ b/drivers/mmc/host/sdhci-msm.c
+@@ -2455,7 +2455,8 @@ static const struct sdhci_pltfm_data sdhci_msm_pdata = {
+ 		  SDHCI_QUIRK_CAP_CLOCK_BASE_BROKEN |
+ 		  SDHCI_QUIRK_MULTIBLOCK_READ_ACMD12,
+ 
+-	.quirks2 = SDHCI_QUIRK2_PRESET_VALUE_BROKEN,
++	.quirks2 = SDHCI_QUIRK2_PRESET_VALUE_BROKEN |
++		   SDHCI_QUIRK2_BROKEN_HS200 | SDHCI_QUIRK2_BROKEN_DDR50,
+ 	.ops = &sdhci_msm_ops,
+ };
+ 
+diff --git a/drivers/mmc/core/lumia930-audit.h b/drivers/mmc/core/lumia930-audit.h
+new file mode 100644
+--- /dev/null
++++ b/drivers/mmc/core/lumia930-audit.h
+@@ -0,0 +1,58 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++#ifndef LUMIA930_MMC_AUDIT_H
++#define LUMIA930_MMC_AUDIT_H
++
++#include <linux/mmc/mmc.h>
++
++static inline bool lumia930_mmc_audit_allowed(unsigned int opcode,
++		unsigned int arg, bool data_write)
++{
++	unsigned int index = (arg >> 16) & 255;
++	unsigned int value = (arg >> 8) & 255;
++
++	if (data_write)
++		return false;
++
++	switch (opcode) {
++	case MMC_GO_IDLE_STATE:
++	case MMC_SEND_OP_COND:
++	case MMC_ALL_SEND_CID:
++	case MMC_SET_RELATIVE_ADDR:
++	case MMC_SELECT_CARD:
++	case MMC_SEND_EXT_CSD:
++	case MMC_SEND_CSD:
++	case MMC_SEND_CID:
++	case MMC_STOP_TRANSMISSION:
++	case MMC_SEND_STATUS:
++	case MMC_SET_BLOCKLEN:
++	case MMC_READ_SINGLE_BLOCK:
++	case MMC_READ_MULTIPLE_BLOCK:
++	case MMC_SEND_TUNING_BLOCK_HS200:
++	case MMC_SET_BLOCK_COUNT:
++		return true;
++	case MMC_SWITCH:
++		if ((arg >> 24) != MMC_SWITCH_MODE_WRITE_BYTE ||
++		    (arg & 255) != EXT_CSD_CMD_SET_NORMAL)
++			return false;
++		switch (index) {
++		case EXT_CSD_BUS_WIDTH:
++			return value <= 2;
++		case EXT_CSD_HS_TIMING:
++			return value <= 1;
++		case EXT_CSD_POWER_CLASS:
++			return value <= 15;
++		case EXT_CSD_CACHE_CTRL:
++			return value == 0;
++		case EXT_CSD_ERASE_GROUP_DEF:
++		case EXT_CSD_POWER_OFF_NOTIFICATION:
++		case EXT_CSD_HPI_MGMT:
++			return value == 1;
++		default:
++			return false;
++		}
++	default:
++		return false;
++	}
++}
++
++#endif
+diff --git a/drivers/mmc/core/lumia930-data-range.h b/drivers/mmc/core/lumia930-data-range.h
+new file mode 100644
+--- /dev/null
++++ b/drivers/mmc/core/lumia930-data-range.h
+@@ -0,0 +1,21 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++#ifndef LUMIA930_DATA_RANGE_H
++#define LUMIA930_DATA_RANGE_H
++
++#define LUMIA930_DATA_FIRST 5308416ULL
++#define LUMIA930_DATA_END 61071327ULL
++
++static inline bool lumia930_mmc_data_write_allowed(unsigned int opcode,
++		unsigned int sector, unsigned int block_size,
++		unsigned int blocks, bool block_addressed, bool cache_disabled,
++		bool user_area)
++{
++	unsigned long long end = (unsigned long long)sector + blocks;
++
++	return (opcode == MMC_WRITE_BLOCK || opcode == MMC_WRITE_MULTIPLE_BLOCK) &&
++		block_addressed && cache_disabled && user_area &&
++		block_size == 512 && blocks &&
++		(opcode != MMC_WRITE_BLOCK || blocks == 1) &&
++		sector >= LUMIA930_DATA_FIRST && end <= LUMIA930_DATA_END;
++}
++#endif
+diff --git a/arch/arm/boot/dts/qcom/qcom-msm8974-microsoft-common.dtsi b/arch/arm/boot/dts/qcom/qcom-msm8974-microsoft-common.dtsi
+--- a/arch/arm/boot/dts/qcom/qcom-msm8974-microsoft-common.dtsi
++++ b/arch/arm/boot/dts/qcom/qcom-msm8974-microsoft-common.dtsi
+@@ -28,6 +28,11 @@
+  * initramfs can never find pmos_root_uuid. */
+ &sdhc_1 {
+ 	status = "okay";
++	bus-width = <1>;
++	max-frequency = <25000000>;
++	no-sd;
++	no-sdio;
++	no-mmc-hs400;
+ 	vmmc-supply = <&pm8941_l20>;
+ 	vqmmc-supply = <&pm8941_s3>;
+ };

@@ -3,10 +3,12 @@
 **all four cores running Linux on a nokia lumia 930**, with a framebuffer
 status screen and USB networking. device: RM-975, `martini`, MSM8974.
 
-this is a RAM-booted Linux 6.16 setup, not a Windows replacement. the normal
-Windows boot remains the default. the Linux boot command does not flash
-anything; the prerequisite BootShim/lk installation does modify EFI files
-and needs separate backups.
+this is an experimental Linux6.16 setup, not a Windows replacement. the
+original tiny-init image supports RAM boot and a CPU dashboard. the newer
+Alpine image supports installed lk file boot, key-only SSH and manual
+Data-backed diskless persistence. Windows remains the default. RAM boot does
+not flash anything; installing BootShim/lk or replacing the EFI image does
+write boot files and requires separate backups.
 
 ## verified on the phone
 
@@ -30,9 +32,25 @@ charging, audio, camera, modem, touch and wireless are not validated here;
 pronto is disabled. the display inherits firmware scanout, not a full GPU
 or panel driver. do not treat this as a daily-driver phone port.
 
+## alpine and persistence
+
+[the Alpine build and test notes](alpine/README.md) cover the installed-menu
+path, authenticated USB SSH, host USB internet helpers and the guarded MMC
+kernel. [persistence usage](alpine/PERSISTENCE.md) describes `lumia-save`:
+configuration, selected files and official signed packages are saved on Data
+and restored into RAM at boot. Data is unmounted between manual saves.
+
+RAM boot, installed-menu restoration, offline save and desktop SSH/HTTPS were
+verified. unplugged boot and thinkpad operation were also reported working by
+the owner. the new Data-only kernel is specific to the audited32GB layout;
+do not enable unrestricted MMC writes or reuse its bounds on another layout.
+there is no repartitioning, formatting or automated deployment here.
+
 ## layout
 
-- `kernel/`: tested kernel config and the original ARM32 parking backend patch.
+- `kernel/`: tested configs, ARM32 parking backend and Data-only MMC patch.
+- `alpine/`: private image/lk builders, read-only FAT/image validation, USB SSH
+  services, host helpers and diskless save/restore sources.
 - `dts/`: 930 board tree and the common 1520-derived regulator/USB base.
 - `status-screen/`: tiny static, libc-free PID1 and the host dashboard sender.
 - `tools/build-image.sh`: build a four-core Android v0 RAM-boot image.
@@ -111,6 +129,9 @@ fastboot boot /path/to/output/boot.img
 start with `MAX_CPUS=2`, then use the default four-core image after cpu1
 works. `SMP_TEST=1` enables bounded pinned workers and a read-only TCP boot
 report; this is a diagnostic build, not enabled in the normal image.
+status-screen artifacts are built under the selected output directory rather
+than shared in the source tree. parallel image builds still need separate
+kernel checkouts and output directories.
 
 ## status screen and USB
 
@@ -143,6 +164,10 @@ PID1 uses the Linux 8x16 bitmap font at 3x scale, not an installed desktop
 font. the font header is generated locally from the kernel source and is
 not committed. the service is for a trusted direct USB connection, with
 no authentication or encryption.
+
+native runtime, TELNET and parallel-build regression checks are documented
+in [status-screen/TESTING.md](status-screen/TESTING.md). these source-level
+checks are separate from hardware boot validation.
 
 ## privacy and licensing
 

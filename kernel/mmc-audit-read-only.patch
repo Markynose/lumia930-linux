@@ -1,0 +1,244 @@
+diff --git a/drivers/mmc/core/block.c b/drivers/mmc/core/block.c
+index 9cc47bf94..543ec2177 100644
+--- a/drivers/mmc/core/block.c
++++ b/drivers/mmc/core/block.c
+@@ -845,37 +845,7 @@ static int mmc_blk_check_blkdev(struct block_device *bdev)
+ static int mmc_blk_ioctl(struct block_device *bdev, blk_mode_t mode,
+ 	unsigned int cmd, unsigned long arg)
+ {
+-	struct mmc_blk_data *md;
+-	int ret;
+-
+-	switch (cmd) {
+-	case MMC_IOC_CMD:
+-		ret = mmc_blk_check_blkdev(bdev);
+-		if (ret)
+-			return ret;
+-		md = mmc_blk_get(bdev->bd_disk);
+-		if (!md)
+-			return -EINVAL;
+-		ret = mmc_blk_ioctl_cmd(md,
+-					(struct mmc_ioc_cmd __user *)arg,
+-					NULL);
+-		mmc_blk_put(md);
+-		return ret;
+-	case MMC_IOC_MULTI_CMD:
+-		ret = mmc_blk_check_blkdev(bdev);
+-		if (ret)
+-			return ret;
+-		md = mmc_blk_get(bdev->bd_disk);
+-		if (!md)
+-			return -EINVAL;
+-		ret = mmc_blk_ioctl_multi_cmd(md,
+-					(struct mmc_ioc_multi_cmd __user *)arg,
+-					NULL);
+-		mmc_blk_put(md);
+-		return ret;
+-	default:
+-		return -EINVAL;
+-	}
++	return -EROFS;
+ }
+ 
+ #ifdef CONFIG_COMPAT
+@@ -2455,6 +2425,9 @@ enum mmc_issued mmc_blk_mq_issue_rq(struct mmc_queue *mq, struct request *req)
+ 	struct mmc_host *host = card->host;
+ 	int ret;
+ 
++	if (req_op(req) != REQ_OP_READ)
++		return MMC_REQ_FAILED_TO_START;
++
+ 	ret = mmc_blk_part_switch(card, md->part_type);
+ 	if (ret)
+ 		return MMC_REQ_FAILED_TO_START;
+@@ -2616,7 +2589,7 @@ static struct mmc_blk_data *mmc_blk_alloc_req(struct mmc_card *card,
+ 	 * Set the read-only status based on the supported commands
+ 	 * and the write protect switch.
+ 	 */
+-	md->read_only = mmc_blk_readonly(card);
++	md->read_only = true;
+ 
+ 	if (mmc_host_can_cmd23(card->host)) {
+ 		if ((mmc_card_mmc(card) &&
+@@ -3057,6 +3030,9 @@ static int mmc_blk_alloc_parts(struct mmc_card *card, struct mmc_blk_data *md)
+ {
+ 	int idx, ret;
+ 
++	if (md->read_only)
++		return 0;
++
+ 	if (!mmc_card_mmc(card))
+ 		return 0;
+ 
+diff --git a/drivers/mmc/core/core.c b/drivers/mmc/core/core.c
+index a0e2dce70..37e326ee6 100644
+--- a/drivers/mmc/core/core.c
++++ b/drivers/mmc/core/core.c
+@@ -45,6 +45,7 @@
+ #include "mmc_ops.h"
+ #include "sd_ops.h"
+ #include "sdio_ops.h"
++#include "lumia930-audit.h"
+ 
+ /* The max erase timeout, used when host->max_busy_timeout isn't specified */
+ #define MMC_ERASE_TIMEOUT_MS	(60 * 1000) /* 60 s */
+@@ -216,6 +217,19 @@ static void __mmc_start_request(struct mmc_host *host, struct mmc_request *mrq)
+ {
+ 	int err;
+ 
++	if (!lumia930_mmc_audit_allowed(mrq->cmd->opcode, mrq->cmd->arg,
++			mrq->data && (mrq->data->flags & MMC_DATA_WRITE)) ||
++	    (mrq->sbc && !lumia930_mmc_audit_allowed(mrq->sbc->opcode,
++			mrq->sbc->arg, false)) ||
++	    (mrq->stop && !lumia930_mmc_audit_allowed(mrq->stop->opcode,
++			mrq->stop->arg, false))) {
++		pr_warn_ratelimited("mmc audit: blocked CMD%u index %u\n",
++			mrq->cmd->opcode, (mrq->cmd->arg >> 16) & 255);
++		mrq->cmd->error = mrq->cmd->opcode == MMC_SWITCH ? -EBADMSG : -EROFS;
++		mmc_request_done(host, mrq);
++		return;
++	}
++
+ 	/* Assumes host controller has been runtime resumed by mmc_claim_host */
+ 	err = mmc_retune(host);
+ 	if (err) {
+@@ -435,47 +449,9 @@ EXPORT_SYMBOL(mmc_wait_for_req_done);
+  */
+ int mmc_cqe_start_req(struct mmc_host *host, struct mmc_request *mrq)
+ {
+-	int err;
+-
+-	/*
+-	 * CQE cannot process re-tuning commands. Caller must hold retuning
+-	 * while CQE is in use.  Re-tuning can happen here only when CQE has no
+-	 * active requests i.e. this is the first.  Note, re-tuning will call
+-	 * ->cqe_off().
+-	 */
+-	err = mmc_retune(host);
+-	if (err)
+-		goto out_err;
+-
+-	mrq->host = host;
+-
+-	mmc_mrq_pr_debug(host, mrq, true);
+-
+-	err = mmc_mrq_prep(host, mrq);
+-	if (err)
+-		goto out_err;
+-
+-	if (host->uhs2_sd_tran)
+-		mmc_uhs2_prepare_cmd(host, mrq);
+-
+-	err = host->cqe_ops->cqe_request(host, mrq);
+-	if (err)
+-		goto out_err;
+-
+-	trace_mmc_request_start(host, mrq);
+-
+-	return 0;
+-
+-out_err:
+-	if (mrq->cmd) {
+-		pr_debug("%s: failed to start CQE direct CMD%u, error %d\n",
+-			 mmc_hostname(host), mrq->cmd->opcode, err);
+-	} else {
+-		pr_debug("%s: failed to start CQE transfer for tag %d, error %d\n",
+-			 mmc_hostname(host), mrq->tag, err);
+-	}
+-	return err;
++	return -EROFS;
+ }
++
+ EXPORT_SYMBOL(mmc_cqe_start_req);
+ 
+ /**
+diff --git a/drivers/mmc/host/sdhci-msm.c b/drivers/mmc/host/sdhci-msm.c
+index bc6ca4965..f699e8682 100644
+--- a/drivers/mmc/host/sdhci-msm.c
++++ b/drivers/mmc/host/sdhci-msm.c
+@@ -2455,7 +2455,8 @@ static const struct sdhci_pltfm_data sdhci_msm_pdata = {
+ 		  SDHCI_QUIRK_CAP_CLOCK_BASE_BROKEN |
+ 		  SDHCI_QUIRK_MULTIBLOCK_READ_ACMD12,
+ 
+-	.quirks2 = SDHCI_QUIRK2_PRESET_VALUE_BROKEN,
++	.quirks2 = SDHCI_QUIRK2_PRESET_VALUE_BROKEN |
++		   SDHCI_QUIRK2_BROKEN_HS200 | SDHCI_QUIRK2_BROKEN_DDR50,
+ 	.ops = &sdhci_msm_ops,
+ };
+ 
+diff --git a/drivers/mmc/core/lumia930-audit.h b/drivers/mmc/core/lumia930-audit.h
+new file mode 100644
+--- /dev/null
++++ b/drivers/mmc/core/lumia930-audit.h
+@@ -0,0 +1,56 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++#ifndef LUMIA930_MMC_AUDIT_H
++#define LUMIA930_MMC_AUDIT_H
++
++#include <linux/mmc/mmc.h>
++
++static inline bool lumia930_mmc_audit_allowed(unsigned int opcode,
++		unsigned int arg, bool data_write)
++{
++	unsigned int index = (arg >> 16) & 255;
++	unsigned int value = (arg >> 8) & 255;
++
++	if (data_write)
++		return false;
++
++	switch (opcode) {
++	case MMC_GO_IDLE_STATE:
++	case MMC_SEND_OP_COND:
++	case MMC_ALL_SEND_CID:
++	case MMC_SET_RELATIVE_ADDR:
++	case MMC_SELECT_CARD:
++	case MMC_SEND_EXT_CSD:
++	case MMC_SEND_CSD:
++	case MMC_SEND_CID:
++	case MMC_STOP_TRANSMISSION:
++	case MMC_SEND_STATUS:
++	case MMC_SET_BLOCKLEN:
++	case MMC_READ_SINGLE_BLOCK:
++	case MMC_READ_MULTIPLE_BLOCK:
++	case MMC_SEND_TUNING_BLOCK_HS200:
++	case MMC_SET_BLOCK_COUNT:
++		return true;
++	case MMC_SWITCH:
++		if ((arg >> 24) != MMC_SWITCH_MODE_WRITE_BYTE ||
++		    (arg & 255) != EXT_CSD_CMD_SET_NORMAL)
++			return false;
++		switch (index) {
++		case EXT_CSD_BUS_WIDTH:
++			return value <= 2;
++		case EXT_CSD_HS_TIMING:
++			return value <= 1;
++		case EXT_CSD_POWER_CLASS:
++			return value <= 15;
++		case EXT_CSD_ERASE_GROUP_DEF:
++		case EXT_CSD_POWER_OFF_NOTIFICATION:
++		case EXT_CSD_HPI_MGMT:
++			return value == 1;
++		default:
++			return false;
++		}
++	default:
++		return false;
++	}
++}
++
++#endif
+diff --git a/arch/arm/boot/dts/qcom/qcom-msm8974-microsoft-common.dtsi b/arch/arm/boot/dts/qcom/qcom-msm8974-microsoft-common.dtsi
+--- a/arch/arm/boot/dts/qcom/qcom-msm8974-microsoft-common.dtsi
++++ b/arch/arm/boot/dts/qcom/qcom-msm8974-microsoft-common.dtsi
+@@ -28,6 +28,11 @@
+  * initramfs can never find pmos_root_uuid. */
+ &sdhc_1 {
+ 	status = "okay";
++	bus-width = <1>;
++	max-frequency = <25000000>;
++	no-sd;
++	no-sdio;
++	no-mmc-hs400;
+ 	vmmc-supply = <&pm8941_l20>;
+ 	vqmmc-supply = <&pm8941_s3>;
+ };

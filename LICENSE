@@ -29,8 +29,19 @@ lk2nd-patches/ apply against Mainline4Lumia/lk2nd (BSD-3-Clause);
 see each patch file for details.
 
 kernel/0001-lumia930-uefi-parking-smp.patch adds GPL-2.0-only Linux
-backend code, with SPDX identifiers in the added sources. the supplied
-kernel config is build configuration, not a copy of the Linux source.
+backend code, with SPDX identifiers in the added sources.
+kernel/0002-lumia930-data-only-mmc.patch and mmc-audit-read-only.patch modify
+GPL-2.0 Linux MMC/SDHCI sources and add GPL-2.0-only guards; their common-DTS
+changes derive from the MIT source credited above. kernel/test-data-policy.py
+and test-mmc-ro-policy.py are GPL-2.0-only.
+the supplied kernel configs are build configuration, not copies of Linux
+source files.
+
+alpine/lk/ contains original BSD-3-Clause sources with SPDX identifiers;
+see alpine/lk/LICENSE for their copyright and full license. alpine/lk-menu.patch targets the BSD-3-Clause
+Mainline4Lumia/lk2nd tree. the remaining original Alpine scripts/tests/docs use
+the project MIT license. downloaded Alpine packages and generated private
+images retain their respective upstream licenses; they are not distributed.
 
 status-screen/gen-font.py generates a bitmap header from the Linux
 GPL-2.0 font source at build time. generated headers and binaries are not
