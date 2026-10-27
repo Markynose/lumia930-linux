@@ -119,6 +119,8 @@
 		vio-supply = <&pm8941_l6>;
 		interrupt-parent = <&tlmm>;
 		interrupts = <61 2>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&touch_irq_default>;
 
 		#address-cells = <1>;
 		#size-cells = <0>;
@@ -141,6 +143,15 @@
 };
 
 &tlmm {
+	touch_irq_default: touch-irq-state {
+		/* keep existing phandles stable for the isolated DTB comparison. */
+		phandle = <0x10000>;
+		pins = "gpio61";
+		function = "gpio";
+		bias-pull-up;
+		input-enable;
+	};
+
 	touch-enable-hog {
 		gpio-hog;
 		gpios = <60 0>;

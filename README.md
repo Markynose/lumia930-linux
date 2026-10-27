@@ -20,6 +20,8 @@ write boot files and requires separate backups.
 - USB NCM networking and the TCP status screen remain responsive.
 - phone-local CPU online count and per-core busy percentages, visually
   confirmed on the actual screen.
+- touchscreen corner taps, vertical swipes and two simultaneous contacts in a
+  separate RAM test after fixing the GPIO61 IRQ pull-up; see [touch](docs/touch.md).
 
 this works through the **stock UEFI parking mailboxes**, without TZ patches,
 SCM boot-address calls or resetting the secondary cores. the kernel backend
@@ -28,9 +30,12 @@ and [the corrected firmware research](smp-research/README.md).
 
 basic SMP is verified, not CPU hotplug or secure power collapse. keep
 `cpuidle.off=1`, `clk_ignore_unused` and `pd_ignore_unused` for this setup.
-charging, audio, camera, modem, touch and wireless are not validated here;
-pronto is disabled. the display inherits firmware scanout, not a full GPU
-or panel driver. do not treat this as a daily-driver phone port.
+charging remains unresolved: USB can be online while the battery discharges,
+and the owner observed real depletion. audio, camera, modem and wireless are
+not validated; pronto is disabled. the display inherits firmware scanout, not
+a full GPU or panel driver. X11 and GPU acceleration are the
+[next bring-up work](docs/graphics.md), not working features. do not treat this
+as a daily-driver phone port.
 
 ## alpine and persistence
 

@@ -5,7 +5,7 @@
 fd4ec39f41d2a59789bf703abf75b0f4c050fa6a01092c9a04e9fca947f763d7  drivers/mmc/core/lumia930-audit.h
 c73fcdfccac34488eda9d517aae8ad358ab86704318392ad94e91281334ad78c  drivers/mmc/core/lumia930-data-range.h
 2f018cd8c707f199834050c1f421e6c0591778c62ebc6d8c7d2ee0abf5fcee4a  arch/arm/boot/dts/qcom/qcom-msm8974-microsoft-common.dtsi
-cf4450531ed8907cef5de0e42fea3d5db5ea793e3f4a99d2b22a059b16cceb1d  arch/arm/boot/dts/qcom/qcom-msm8974-nokia-martini.dts
+096ddcef1cb96aa39811a6a7d45cb77195ac7ed3fbe6e337d7ce50226a9b5367  arch/arm/boot/dts/qcom/qcom-msm8974-nokia-martini.dts
 5a4cef9d2b7105bfe55448c6c090fc4dd522b083833afe3b95586daf1ff7d524  arch/arm/mach-qcom/headsmp-lumia930.S
 c7810d817ede03c4037943ee72499fc36373bfca0a06a6322696d7730d29b8a3  arch/arm/mach-qcom/platsmp-lumia930.c
 c33a104bd197157fa3603cd120ef951e1e6e24b8884b035e89df0b76e6aff18e  arch/arm/mach-qcom/Makefile

@@ -16,10 +16,15 @@ are distributed here.
   restoration through RAM boot and installed-menu boot.
 - an offline second save, with the phone default route removed for the test.
 - unplugged startup and thinkpad operation reported working by the owner.
+- corner taps, vertical swipes and two-finger touch in a separate GPIO61
+  pull-up RAM test; [details and source-only regression](../docs/touch.md).
 
-charging, suspend, full touch/graphics, wireless/audio/modem/camera and
-long-term filesystem reliability are not certified. this is an experimental
+charging, suspend, graphics, wireless/audio/modem/camera and long-term
+filesystem reliability are not certified. USB presence does not prove net
+charging; real battery depletion was reported. this is an experimental
 single-phone setup, not a generic installer or full hardware-support claim.
+X11/GPU work is [planned separately](../docs/graphics.md). existing installed
+images do not gain the touch fix through `git pull` or `lumia-save`.
 
 ## private RAM-only image
 
