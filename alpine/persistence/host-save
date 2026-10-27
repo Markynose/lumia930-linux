@@ -1,4 +1,5 @@
 #!/bin/sh
 set -eu
 [ "$#" = 0 ] || { echo 'usage: lumia-save' >&2; exit 1; }
+printf '  -> requesting a phone save over SSH; progress follows below\n' >&2
 exec ssh -o BatchMode=yes lumia930 lumia-save
