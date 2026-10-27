@@ -4,6 +4,9 @@
 /firmware/
 /dumps/
 /repo-backups/
+/alpine-run/
+/mmc-ro-run/
+/persist-run/
 SESSION-STATE.md
 NEXT-AFTER-COMPACTION.md
 *.dump
@@ -28,6 +31,8 @@ NEXT-AFTER-COMPACTION.md
 *.jks
 id_rsa*
 id_ed25519*
+dropbear_*_host_key*
+known_hosts
 .ssh/
 .aws/
 
@@ -37,6 +42,8 @@ id_ed25519*
 /kernel-out/
 /linux-fork/
 /linux-parking/
+/linux-mmc-ro/
+/linux-data-save/
 /lk2nd/
 *.o
 *.a
@@ -45,6 +52,11 @@ id_ed25519*
 *.img
 *.cpio
 *.cpio.gz
+*.apk
+*.ntfsclone
+*.ntfsclone.part
+*.apkovl.tar.gz
+config.tar.gz
 *.dtb
 zImage*
 vmlinux*
@@ -57,3 +69,4 @@ __pycache__/
 /status-screen/init
 /status-screen/init.stripped
 /status-screen/root/
+/status-screen/.status-screen.*/

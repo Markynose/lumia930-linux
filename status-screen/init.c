@@ -149,6 +149,8 @@ static u32 rgb(u32 c)
 
 static void fill(u32 x, u32 y, u32 w, u32 h, u32 color)
 {
+	if (!fb)
+		return;
 	u32 c = rgb(color);
 
 	for (u32 j = y; j < y + h && j < fbh; j++)
@@ -158,6 +160,8 @@ static void fill(u32 x, u32 y, u32 w, u32 h, u32 color)
 
 static void glyph(u32 col, u32 row, u8 ch, u32 color)
 {
+	if (!fb)
+		return;
 	const u8 *g = &font8x16[ch * 16];
 	u32 c = rgb(color), b = rgb(BG);
 	u32 x0 = col * CW, y0 = row * CH;
@@ -199,7 +203,7 @@ static void note(const char *s, u32 color)
 static int fb_init(void)
 {
 	long v[40], f[17];
-	int fd = -1;
+	int fd = -1, rc = -2;
 
 	for (int i = 0; i < 50 && fd < 0; i++) {
 		fd = xopen("/dev/fb0", 2);
@@ -210,32 +214,44 @@ static int fb_init(void)
 		return -1;
 	if (sys(SYS_ioctl, fd, 0x4600, (long)v, 0, 0, 0) < 0 ||
 	    sys(SYS_ioctl, fd, 0x4602, (long)f, 0, 0, 0) < 0)
-		return -2;
+		goto out;
 	/* fb_var_screeninfo: xres, yres at 0 and 4, bpp at 24, colour fields from 32 */
+	rc = -3;
+	if (v[6] != 32 || (u32)v[8] > 24 || (u32)v[11] > 24 ||
+	    (u32)v[14] > 24 || (v[18] && (u32)v[17] > 24))
+		goto out;
+	/* fb_fix_screeninfo: smem_len at 20, line_length at 44 */
+	u32 len = ((u32 *)f)[5], line = ((u32 *)f)[11];
+
+	if (!v[0] || !v[1] || !line || (line & 3) ||
+	    (u32)v[0] > line / 4 || (u32)v[1] > len / line)
+		goto out;
+	long p = sys(SYS_mmap2, 0, len, 3, 1, fd, 0);
+
+	rc = -4;
+	if (!p || (p < 0 && p > -4096))
+		goto out;
+	fb = (u32 *)p;
 	fbw = v[0];
 	fbh = v[1];
-	if (v[6] != 32)
-		return -3;
+	fbstride = line / 4;
 	sh_r = v[8];
 	sh_g = v[11];
 	sh_b = v[14];
 	sh_t = v[18] ? v[17] : 24;
-	/* fb_fix_screeninfo: smem_len at 20, line_length at 44 */
-	fbstride = ((u32 *)f)[11] >> 2;
-	long len = ((u32 *)f)[5];
-	long p = sys(SYS_mmap2, 0, len, 3, 1, fd, 0);
-
-	if (p < 0 && p > -4096)
-		return -4;
-	fb = (u32 *)p;
 	{
 		int tty = xopen("/dev/tty0", 2);
 
-		if (tty >= 0)
+		if (tty >= 0) {
 			sys(SYS_ioctl, tty, 0x4b3a, 1, 0, 0, 0);
+			sys(SYS_close, tty, 0, 0, 0, 0, 0);
+		}
 	}
 	fill(0, 0, fbw, fbh, BG);
-	return 0;
+	rc = 0;
+out:
+	sys(SYS_close, fd, 0, 0, 0, 0, 0);
+	return rc;
 }
 
 static int read_file(const char *path, char *buf, u32 size)
@@ -541,7 +557,7 @@ static void serve(void)
 #endif
 			}
 		}
-		if (cfd >= 0 && n == 2 && (p[1].rev & 0x19)) {
+		if (cfd >= 0 && n == 2 && cfd == p[1].fd && (p[1].rev & 0x19)) {
 			long k = sys(SYS_read, cfd, (long)in, sizeof(in), 0, 0, 0);
 
 			if (k <= 0) {

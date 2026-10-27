@@ -25,8 +25,8 @@ cp "$ROOT/dts/qcom-msm8974-microsoft-common.dtsi" "$ROOT/dts/qcom-msm8974-nokia-
 make -C "$KSRC" ARCH=arm LLVM=1 olddefconfig
 make -C "$KSRC" ARCH=arm LLVM=1 -j"${JOBS:-$(getconf _NPROCESSORS_ONLN)}" \
 	zImage qcom/qcom-msm8974-nokia-martini.dtb
-(cd "$ROOT/status-screen" && sh ./build.sh "$KSRC")
-cp "$ROOT/status-screen/initramfs.cpio.gz" "$OUT/initramfs.cpio.gz"
+sh "$ROOT/status-screen/build.sh" "$KSRC" "$OUT/status-screen"
+cp "$OUT/status-screen/initramfs.cpio.gz" "$OUT/initramfs.cpio.gz"
 python3 - "$KSRC" "$OUT/zImage-dtb" <<'PY'
 from pathlib import Path
 import struct

@@ -1,41 +1,73 @@
-import os, socket, sys, time
+import os
+import socket
+import sys
 
 IAC, DONT, DO, WONT, WILL, SB, SE = 255, 254, 253, 252, 251, 250, 240
 
-def strip(s, data):
-    out, i = bytearray(), 0
-    while i < len(data):
-        b = data[i]
-        if b == IAC and i + 1 < len(data):
-            c = data[i + 1]
-            if c in (DO, DONT, WILL, WONT) and i + 2 < len(data):
-                s.sendall(bytes([IAC, WONT if c == DO else DONT, data[i + 2]]))
-                i += 3
-                continue
-            i += 2
-            continue
-        out.append(b)
-        i += 1
-    return bytes(out)
 
-def read(s, wait):
-    s.settimeout(wait)
-    buf = b""
+class TelnetParser:
+    def __init__(self, sock):
+        self.sock = sock
+        self.state = 'data'
+        self.command = None
+
+    def feed(self, data):
+        out = bytearray()
+        for byte in data:
+            if self.state == 'data':
+                if byte == IAC:
+                    self.state = 'iac'
+                else:
+                    out.append(byte)
+            elif self.state == 'iac':
+                if byte == IAC:
+                    out.append(IAC)
+                    self.state = 'data'
+                elif byte in (DO, DONT, WILL, WONT):
+                    self.command = byte
+                    self.state = 'option'
+                elif byte == SB:
+                    self.state = 'subnegotiation'
+                else:
+                    self.state = 'data'
+            elif self.state == 'option':
+                if self.command in (DO, WILL):
+                    reply = WONT if self.command == DO else DONT
+                    self.sock.sendall(bytes((IAC, reply, byte)))
+                self.command = None
+                self.state = 'data'
+            elif self.state == 'subnegotiation':
+                if byte == IAC:
+                    self.state = 'subnegotiation-iac'
+            elif self.state == 'subnegotiation-iac':
+                self.state = 'data' if byte == SE else 'subnegotiation'
+        return bytes(out)
+
+
+def read(sock, wait, parser):
+    sock.settimeout(wait)
+    buf = bytearray()
     try:
         while True:
-            d = s.recv(4096)
-            if not d:
+            data = sock.recv(4096)
+            if not data:
                 break
-            buf += strip(s, d)
-            s.settimeout(wait)
+            buf.extend(parser.feed(data))
     except socket.timeout:
         pass
-    return buf
+    return bytes(buf)
 
-host, cmds = sys.argv[1], sys.argv[2:]
-s = socket.create_connection((host, 23), timeout=8)
-print(read(s, 2).decode("utf-8", "replace"), end="")
-for c in cmds:
-    s.sendall(c.encode() + b"\r\n")
-    print(read(s, float(os.environ.get("WPWAIT", "3"))).decode("utf-8", "replace"), end="")
-s.close()
+
+def main():
+    host, cmds = sys.argv[1], sys.argv[2:]
+    with socket.create_connection((host, 23), timeout=8) as sock:
+        parser = TelnetParser(sock)
+        print(read(sock, 2, parser).decode('utf-8', 'replace'), end='')
+        for cmd in cmds:
+            sock.sendall(cmd.encode() + b'\r\n')
+            data = read(sock, float(os.environ.get('WPWAIT', '3')), parser)
+            print(data.decode('utf-8', 'replace'), end='')
+
+
+if __name__ == '__main__':
+    main()
